@@ -1,38 +1,17 @@
 import { PoolClient } from "pg";
 import { logger } from "../infra/logger";
+import { getRedis, TRADE_EVENTS_STREAM } from "../infra/redis/client";
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-type ClosedTrade = {
-  trade_id: string;
-  user_id: string;
-  session_id: string;
-  entry_price: string;
-  exit_price: string | null;
-  quantity: string;
-  exit_at: string | null;
-  status: string;
-  emotional_state: string | null;
-  plan_adherence: number | null;
-  outcome: "win" | "loss" | null;
-  pnl: string | null;
-};
-
-// ---------------------------------------------------------------------------
-// Win Rate by Emotion — Full recompute (DELETE + INSERT)
-// ---------------------------------------------------------------------------
-
+// Re-computes win-rate distributions across emotional states
+// Intent: highlight how specific moods (e.g. anxious) correlate with lower edge
 export async function computeWinRateByEmotion(
   client: PoolClient,
   userId: string,
   traceId: string,
 ): Promise<void> {
-  // Delete existing rows for this user — guarantees idempotency
+  // Full recompute ensures the projection perfectly matches the authoritative trade history
   await client.query("DELETE FROM win_rate_by_emotion WHERE user_id = $1", [userId]);
 
-  // Recompute from DB snapshot: all closed trades with emotional_state
   await client.query(
     `
     INSERT INTO win_rate_by_emotion (user_id, emotional_state, wins, losses, updated_at)
@@ -54,10 +33,7 @@ export async function computeWinRateByEmotion(
   logger.info({ event: "METRIC_UPDATED", metric: "winRateByEmotion", userId, traceId });
 }
 
-// ---------------------------------------------------------------------------
-// Plan Adherence — Latest snapshot per user (UPSERT)
-// ---------------------------------------------------------------------------
-
+// Tracks the evolution of process discipline over the last 10 sessions
 export async function computePlanAdherence(
   client: PoolClient,
   userId: string,
@@ -72,7 +48,7 @@ export async function computePlanAdherence(
       WHERE user_id = $1
         AND status = 'closed'
         AND plan_adherence IS NOT NULL
-      ORDER BY exit_at DESC NULLS LAST
+      ORDER BY entry_at DESC NULLS LAST
       LIMIT 10
     ) AS recent
     `,
@@ -80,11 +56,9 @@ export async function computePlanAdherence(
   );
 
   const avgScore = result.rows[0]?.avg_score;
-  if (avgScore === null || avgScore === undefined) {
-    return; // No trades with plan_adherence data
-  }
+  if (avgScore === null || avgScore === undefined) return;
 
-  // UPSERT: keep latest per user, avoid unbounded growth
+  // Upsert ensures we only keep the most recent calculated snapshot per user
   await client.query(
     `
     INSERT INTO plan_adherence_scores (user_id, calculated_at, score)
@@ -97,10 +71,7 @@ export async function computePlanAdherence(
   logger.info({ event: "METRIC_UPDATED", metric: "planAdherence", userId, score: avgScore, traceId });
 }
 
-// ---------------------------------------------------------------------------
-// Session Tilt — Ratio of losses to total trades in session
-// ---------------------------------------------------------------------------
-
+// Measures performance degradation following losses (session-level instability)
 export async function computeSessionTilt(
   client: PoolClient,
   userId: string,
@@ -130,9 +101,7 @@ export async function computeSessionTilt(
   const total = Number(result.rows[0]?.total ?? 0);
   const lossFollowing = Number(result.rows[0]?.loss_following ?? 0);
 
-  if (total === 0) {
-    return;
-  }
+  if (total === 0) return;
 
   const tiltIndex = Number((lossFollowing / total).toFixed(4));
 
@@ -149,17 +118,14 @@ export async function computeSessionTilt(
   logger.info({ event: "METRIC_UPDATED", metric: "sessionTilt", userId, sessionId, tiltIndex, traceId });
 }
 
-// ---------------------------------------------------------------------------
-// Revenge Trade Flagging — 90s window + emotion check
-// ---------------------------------------------------------------------------
-
+// Flags impulsive re-entries immediately following a negative outcome
+// Heuristic: entry within 90s of a loss while in an unstable emotional state
 export async function computeRevengeFlag(
   client: PoolClient,
   userId: string,
   tradeId: string,
   traceId: string,
 ): Promise<void> {
-  // Find if this trade was opened within 90s of a losing close
   const result = await client.query<{ revenge_flag: boolean }>(
     `
     WITH current_trade AS (
@@ -188,10 +154,8 @@ export async function computeRevengeFlag(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Overtrading Detection — 30-min sliding window
-// ---------------------------------------------------------------------------
-
+// Detects clusters of high-frequency activity that signal a loss of control
+// Threshold: > 10 trades within a 30-minute window
 export async function detectOvertrading(
   client: PoolClient,
   userId: string,
@@ -201,50 +165,46 @@ export async function detectOvertrading(
   const WINDOW_MINUTES = 30;
   const THRESHOLD = 10;
 
-  // Find trade clusters within 30-min windows in this session (SLIDING WINDOW)
-  const result = await client.query<{ window_start: string; trade_count: string }>(
+  const result = await client.query<{ window_start: string; trade_count: string; evidence_session_id: string }>(
     `
     SELECT
       t1.entry_at AS window_start,
-      COUNT(t2.trade_id)::INTEGER AS trade_count
+      COUNT(t2.trade_id)::INTEGER AS trade_count,
+      MIN(t1.session_id)::TEXT AS evidence_session_id
     FROM trades t1
     JOIN trades t2 ON t1.user_id = t2.user_id
       AND t2.entry_at BETWEEN t1.entry_at AND t1.entry_at + INTERVAL '30 minutes'
     WHERE t1.user_id = $1
-      AND t1.session_id = $2
-      AND t1.status = 'closed'
-      AND t2.status = 'closed'
     GROUP BY t1.trade_id, t1.entry_at
-    HAVING COUNT(t2.trade_id) >= $3
+    HAVING COUNT(t2.trade_id) > $2
     ORDER BY t1.entry_at ASC
     `,
-    [userId, sessionId, THRESHOLD],
+    [userId, THRESHOLD],
   );
 
-  const redis = require("../infra/redis/client").getRedis();
-  const { TRADE_EVENTS_STREAM } = require("../infra/redis/client");
+  const redis = getRedis();
 
   for (const row of result.rows) {
-    // Idempotent insert: unique per (user, session, window_start)
+    // Idempotent logging of overtrading alerts
     const insertResult = await client.query(
       `
       INSERT INTO overtrading_events (event_id, user_id, session_id, detected_at, trade_count, window_minutes)
       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5)
-      ON CONFLICT DO NOTHING
+      ON CONFLICT (user_id, detected_at) DO NOTHING
       RETURNING event_id
       `,
-      [userId, sessionId, row.window_start, Number(row.trade_count), WINDOW_MINUTES],
+      [userId, row.evidence_session_id, row.window_start, Number(row.trade_count), WINDOW_MINUTES],
     );
 
     if (insertResult.rowCount === 1) {
-      // Emit to event bus as required by spec
+      // Propagate critical behavioral alerts back to the event bus
       await redis.xadd(
         TRADE_EVENTS_STREAM,
         "*",
         "eventId", insertResult.rows[0].event_id,
         "type", "SYSTEM_ALERT_OVERTRADING",
         "userId", userId,
-        "sessionId", sessionId,
+        "sessionId", row.evidence_session_id,
         "detectedAt", row.window_start,
         "tradeCount", row.trade_count,
         "traceId", traceId,
