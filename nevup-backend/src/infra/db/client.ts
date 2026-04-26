@@ -9,6 +9,7 @@ const pool = new Pool({
   max: 17, 
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 2000,
+  statement_timeout: 5000, // 5s query timeout as per global resilience rule
 });
 
 // Logs fatal errors within the connection pool
