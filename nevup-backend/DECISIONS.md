@@ -35,3 +35,8 @@ Metric functions (win rate, tilt, plan adherence) use DELETE + INSERT or UPSERT 
 
 ## Phase 3: ACK discipline
 Messages are ACKed only after a successful DB commit, or immediately for duplicates. Never before compute. This ensures no data loss on worker crashes — unacked messages are automatically retried via consumer group pending entries.
+
+## Known Trade-off: Database > Analytics (Phase 2)
+If Redis is unavailable after the DB claims emission, the event may be lost.
+This is intentional: database correctness is prioritized over analytics completeness.
+
