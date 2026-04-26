@@ -1,5 +1,5 @@
 import { query } from "../src/infra/db/client";
-import seedData from "../seed_dataset.json";
+import seedData from "../nevup_seed_dataset.json";
 
 // Validates computed revenge flags against seed dataset ground truth
 async function validateRevengeFlagsMatch() {

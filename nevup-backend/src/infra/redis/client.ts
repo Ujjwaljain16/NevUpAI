@@ -12,6 +12,7 @@ export const WORKER_NAME = `worker-${hostname()}-${process.pid}`;
 const redis = new Redis(env.redisUrl, {
   maxRetriesPerRequest: null, // Required for blocking stream commands (XREADGROUP)
   retryStrategy: (times) => Math.min(times * 200, 3000),
+  tls: env.redisUrl.includes("upstash.io") || env.redisUrl.startsWith("rediss://") ? {} : undefined,
 });
 
 let readySeen = false;

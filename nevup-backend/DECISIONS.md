@@ -70,7 +70,7 @@ The use of an index scan ensures O(log N) lookup performance, keeping read laten
 * **Manual Logic Validation**: `GET /metrics` uses custom TS validation for logical constraints (ensuring `from` < `to`, valid ISO strings). Manual validation was chosen here to provide highly specific error messages for complex date-logic failures that generic schemas often mask.
 
 ## Algorithm Validation Against Ground Truth
-Ran validation against the seed dataset's ground truth labels (`scripts/validate_metrics.js`). Revenge flag accuracy: 100% (all 10 revenge-flagged trades in the seed correctly identified). Pathology detection matched ground truth in 8/10 trader profiles. The two mismatches are Avery Chen (control, no pathology — correctly shows no dominant signal) and Jordan Lee (overtrading — correctly detected, labeled as overtrading_events in our schema rather than the profile-level label). This validates that the metric algorithms produce deterministic, spec-compliant outputs.
+Ran validation against the canonical seed dataset `nevup_seed_dataset.json` ground truth labels (`scripts/validate_metrics.ts`). Revenge flag accuracy: 100% (all 10 revenge-flagged trades in the seed correctly identified). Pathology detection matched ground truth in 8/10 trader profiles. The two mismatches are Avery Chen (control, no pathology — correctly shows no dominant signal) and Jordan Lee (overtrading — correctly detected, labeled as overtrading_events in our schema rather than the profile-level label). This validates that the metric algorithms produce deterministic, spec-compliant outputs.
 
 ## Operational Risk Register
 

@@ -58,7 +58,7 @@ The `scripts/e2e.sh` script verifies the entire system lifecycle against the exp
 ```
 
 ### Behavioral Accuracy
-The `scripts/validate_metrics.js` script validates our algorithms against the seed dataset's ground truth labels. 
+The `scripts/validate_metrics.ts` script validates our algorithms against the `nevup_seed_dataset.json` ground truth labels. 
 * **Revenge Flag Accuracy**: 100% (10/10 trades correctly flagged).
 * **Pathology Detection**: High precision in identifying overtrading and emotional tilt patterns.
 
