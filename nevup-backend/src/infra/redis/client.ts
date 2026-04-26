@@ -3,6 +3,8 @@ import { env } from "../../config/env";
 import { logger } from "../logger";
 
 export const TRADE_EVENTS_STREAM = "trade_events";
+export const CONSUMER_GROUP = "metrics-group";
+export const WORKER_NAME = "worker-1";
 
 const redis = new Redis(env.redisUrl, {
   maxRetriesPerRequest: null,
