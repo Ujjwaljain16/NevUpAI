@@ -1,8 +1,14 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { parse } from "csv-parse/sync";
-import { query } from "../src/infra/db/client";
+import { query, getPool } from "../src/infra/db/client";
 import { logger } from "../src/infra/logger";
+import {
+  computeWinRateByEmotion,
+  computePlanAdherence,
+  computeSessionTilt,
+  detectOvertrading
+} from "../src/worker/metrics";
 
 type SeedRow = {
   tradeId: string;
@@ -128,4 +134,33 @@ export async function runSeed(): Promise<void> {
       hasSessionGrouping,
     },
   });
+
+  // ── Step 2: Trigger metric computation for all seeded data ──────────
+  logger.info({ event: "SEED_METRICS_START", message: "Recomputing metrics for seeded data..." });
+  const pool = getPool();
+  const client = await pool.connect();
+
+  try {
+    // 1. Per-user metrics
+    for (const userId of uniqueUsers) {
+      await computeWinRateByEmotion(client, userId, "seed-trace");
+      await computePlanAdherence(client, userId, "seed-trace");
+    }
+
+    // 2. Per-session metrics
+    for (const sessionKey of sessionTradeCounts.keys()) {
+      const [userId, sessionId] = sessionKey.split(":");
+      await computeSessionTilt(client, userId, sessionId, "seed-trace");
+      await detectOvertrading(client, userId, sessionId, "seed-trace");
+    }
+
+    logger.info({ event: "SEED_METRICS_COMPLETE" });
+  } catch (error) {
+    logger.error({
+      event: "SEED_METRICS_FAILED",
+      error: error instanceof Error ? error.message : String(error)
+    });
+  } finally {
+    client.release();
+  }
 }

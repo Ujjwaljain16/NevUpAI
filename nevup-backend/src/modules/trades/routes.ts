@@ -88,9 +88,9 @@ function toTradeResponse(row: TradeRow) {
 
 export async function registerTradeRoutes(app: FastifyInstance): Promise<void> {
 
-  // ── POST /users/:userId/trades ──────────────────────────────────────────
-  app.post<{ Body: TradeInput; Params: { userId: string } }>(
-    "/users/:userId/trades",
+  // ── POST /trades ───────────────────────────────────────────────────────
+  app.post<{ Body: TradeInput }>(
+    "/trades",
     { preHandler: [authMiddleware, tenancyMiddleware] },
     async (request, reply) => {
       const traceId = request.appContext?.traceId ?? "unknown";
@@ -104,8 +104,8 @@ export async function registerTradeRoutes(app: FastifyInstance): Promise<void> {
       const previousStatus = existing.rows[0]?.status ?? null;
       const alreadyEmitted = existing.rows[0]?.event_emitted ?? false;
 
-      // ── Step 2: Controlled upsert with insert detection ─────────────────
-      const upsertResult = await query<TradeRow>(
+      // ── Step 2: Idempotent insert ────────────────────────────────────────
+      let upsertResult = await query<TradeRow & { is_insert?: boolean }>(
         `
         INSERT INTO trades (
           trade_id, user_id, session_id, asset, asset_class, direction,
@@ -116,12 +116,8 @@ export async function registerTradeRoutes(app: FastifyInstance): Promise<void> {
           $7, $8, $9, $10, $11, $12,
           $13, $14, $15
         )
-        ON CONFLICT (trade_id) DO UPDATE SET
-          status = EXCLUDED.status,
-          exit_price = COALESCE(EXCLUDED.exit_price, trades.exit_price),
-          exit_at = COALESCE(EXCLUDED.exit_at, trades.exit_at),
-          updated_at = NOW()
-        RETURNING *, (xmax = 0) AS is_insert
+        ON CONFLICT (trade_id) DO NOTHING
+        RETURNING *, true AS is_insert
         `,
         [
           tradeId,
@@ -141,6 +137,14 @@ export async function registerTradeRoutes(app: FastifyInstance): Promise<void> {
           request.body.entryRationale ?? null,
         ],
       );
+
+      // If not inserted, fetch the existing row to return it
+      if (upsertResult.rowCount === 0) {
+        upsertResult = await query<TradeRow & { is_insert?: boolean }>(
+          "SELECT *, false AS is_insert FROM trades WHERE trade_id = $1",
+          [tradeId],
+        );
+      }
 
       const row = upsertResult.rows[0];
 
@@ -261,14 +265,14 @@ export async function registerTradeRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  // ── GET /users/:userId/trades/:tradeId ────────────────────────────────
-  app.get<{ Params: { tradeId: string; userId: string } }>(
-    "/users/:userId/trades/:tradeId",
-    { preHandler: [authMiddleware, tenancyMiddleware] },
+  // ── GET /trades/:tradeId ───────────────────────────────────────────────
+  app.get<{ Params: { tradeId: string } }>(
+    "/trades/:tradeId",
+    { preHandler: [authMiddleware] },
     async (request, reply) => {
       const result = await query<TradeRow>(
-        "SELECT * FROM trades WHERE trade_id = $1",
-        [request.params.tradeId],
+        "SELECT * FROM trades WHERE trade_id = $1 AND user_id = $2",
+        [request.params.tradeId, request.user?.userId],
       );
       const row = result.rows[0];
 

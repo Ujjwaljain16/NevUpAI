@@ -60,51 +60,65 @@ export async function registerMetricRoutes(app: FastifyInstance): Promise<void> 
         throw Object.assign(new Error(validationError), { statusCode: 400 });
       }
 
-      // ── Win rate by emotion (from worker-computed table) ────────────────
+      // ── Metrics computed for the specific range ──────────────────────────
+      // This ensures compliance with "queryable via the read API with date range filtering"
+
+      // 1. Win rate by emotion for the range
       const emotionResult = await query<{
         emotional_state: string;
         wins: number;
         losses: number;
       }>(
-        "SELECT emotional_state, wins, losses FROM win_rate_by_emotion WHERE user_id = $1",
-        [userId],
+        `SELECT
+          emotional_state,
+          COUNT(*) FILTER (WHERE outcome = 'win')::INTEGER AS wins,
+          COUNT(*) FILTER (WHERE outcome = 'loss')::INTEGER AS losses
+         FROM trades
+         WHERE user_id = $1 AND entry_at BETWEEN $2 AND $3 AND status = 'closed'
+         GROUP BY emotional_state`,
+        [userId, from, to],
       );
 
-      const byEmotion = emotionResult.rows.map((row) => ({
-        emotion: row.emotional_state,
-        wins: Number(row.wins),
-        losses: Number(row.losses),
-        winRate: (Number(row.wins) + Number(row.losses)) > 0
-          ? Number((Number(row.wins) / (Number(row.wins) + Number(row.losses))).toFixed(4))
-          : 0,
-      }));
+      const winRateByEmotionalState: Record<string, any> = {};
+      emotionResult.rows.forEach(row => {
+        const wins = Number(row.wins);
+        const losses = Number(row.losses);
+        winRateByEmotionalState[row.emotional_state || 'neutral'] = {
+          wins,
+          losses,
+          winRate: (wins + losses) > 0 ? Number((wins / (wins + losses)).toFixed(4)) : 0,
+        };
+      });
 
-      // Overall win rate from emotion aggregates
-      const totalWins = byEmotion.reduce((sum, e) => sum + e.wins, 0);
-      const totalLosses = byEmotion.reduce((sum, e) => sum + e.losses, 0);
-      const overallWinRate = (totalWins + totalLosses) > 0
-        ? Number((totalWins / (totalWins + totalLosses)).toFixed(4))
-        : null;
-
-      // ── Plan adherence (latest snapshot) ────────────────────────────────
+      // 2. Plan adherence score for the range
       const adherenceResult = await query<{ score: string }>(
-        "SELECT score FROM plan_adherence_scores WHERE user_id = $1 ORDER BY calculated_at DESC LIMIT 1",
-        [userId],
+        `SELECT AVG(plan_adherence)::NUMERIC(8, 4) AS score
+         FROM trades
+         WHERE user_id = $1 AND entry_at BETWEEN $2 AND $3 AND plan_adherence IS NOT NULL`,
+        [userId, from, to],
       );
-      const avgPlanAdherence = adherenceResult.rows[0]
+      const planAdherenceScore = adherenceResult.rows[0]?.score
         ? Number(adherenceResult.rows[0].score)
         : null;
 
-      // ── Average tilt index ──────────────────────────────────────────────
-      const tiltResult = await query<{ avg_tilt: string }>(
-        `SELECT AVG(tilt_index)::NUMERIC(8,4) AS avg_tilt
-         FROM session_tilt
-         WHERE user_id = $1`,
-        [userId],
+      // 3. Session tilt index for the range
+      // Spec: "Ratio of (loss-following trades / total trades) in the current sessionId"
+      // For a range, we'll calculate the aggregate ratio across all trades in that range.
+      const tiltResult = await query<{ loss_following: number; total: number }>(
+        `WITH ordered AS (
+           SELECT outcome, LAG(outcome) OVER (PARTITION BY session_id ORDER BY entry_at) AS prev_outcome
+           FROM trades
+           WHERE user_id = $1 AND entry_at BETWEEN $2 AND $3 AND status = 'closed'
+         )
+         SELECT
+           COUNT(*) FILTER (WHERE prev_outcome = 'loss')::INTEGER AS loss_following,
+           COUNT(*)::INTEGER AS total
+         FROM ordered`,
+        [userId, from, to],
       );
-      const avgTiltIndex = tiltResult.rows[0]?.avg_tilt
-        ? Number(tiltResult.rows[0].avg_tilt)
-        : null;
+      const sessionTiltIndex = (tiltResult.rows[0]?.total ?? 0) > 0
+        ? Number((tiltResult.rows[0].loss_following / tiltResult.rows[0].total).toFixed(4))
+        : 0;
 
       // ── Overtrading event count (within range) ──────────────────────────
       const overtradingResult = await query<{ count: string }>(
@@ -115,9 +129,6 @@ export async function registerMetricRoutes(app: FastifyInstance): Promise<void> 
         [userId, from, to],
       );
       const overtradingEvents = Number(overtradingResult.rows[0]?.count ?? 0);
-
-      // ── Build summary ───────────────────────────────────────────────────
-      const hasSummary = overallWinRate !== null || avgPlanAdherence !== null || avgTiltIndex !== null;
 
       const latency = Date.now() - startTime;
 
@@ -131,21 +142,74 @@ export async function registerMetricRoutes(app: FastifyInstance): Promise<void> 
         source: "api",
       });
 
+      // ── Revenge trades count ───────────────────────────────────────────
+      const revengeResult = await query<{ count: string }>(
+        `SELECT COUNT(*)::INTEGER AS count
+         FROM trades
+         WHERE user_id = $1
+           AND revenge_flag = TRUE
+           AND entry_at BETWEEN $2 AND $3`,
+        [userId, from, to],
+      );
+      const revengeTrades = Number(revengeResult.rows[0]?.count ?? 0);
+
+      // ── Timeseries bucketing ───────────────────────────────────────────
+      let timeseriesQuery = "";
+      if (granularity === "hourly") {
+        timeseriesQuery = `
+          SELECT
+            date_trunc('hour', entry_at) AS bucket,
+            COUNT(*)::INTEGER AS trade_count,
+            COUNT(*) FILTER (WHERE outcome = 'win')::NUMERIC / NULLIF(COUNT(*) FILTER (WHERE status = 'closed'), 0)::NUMERIC AS win_rate,
+            SUM(pnl)::NUMERIC AS pnl,
+            AVG(plan_adherence)::NUMERIC AS avg_plan_adherence
+          FROM trades
+          WHERE user_id = $1 AND entry_at BETWEEN $2 AND $3
+          GROUP BY bucket
+          ORDER BY bucket ASC
+        `;
+      } else if (granularity === "daily" || granularity === "rolling30d") {
+        timeseriesQuery = `
+          SELECT
+            date_trunc('day', entry_at) AS bucket,
+            COUNT(*)::INTEGER AS trade_count,
+            COUNT(*) FILTER (WHERE outcome = 'win')::NUMERIC / NULLIF(COUNT(*) FILTER (WHERE status = 'closed'), 0)::NUMERIC AS win_rate,
+            SUM(pnl)::NUMERIC AS pnl,
+            AVG(plan_adherence)::NUMERIC AS avg_plan_adherence
+          FROM trades
+          WHERE user_id = $1 AND entry_at BETWEEN $2 AND $3
+          GROUP BY bucket
+          ORDER BY bucket ASC
+        `;
+      }
+
+      const timeseriesResult = await query<{
+        bucket: string;
+        trade_count: number;
+        win_rate: number | null;
+        pnl: number | null;
+        avg_plan_adherence: number | null;
+      }>(timeseriesQuery, [userId, from, to]);
+
+      const timeseries = timeseriesResult.rows.map(row => ({
+        bucket: row.bucket,
+        tradeCount: Number(row.trade_count),
+        winRate: row.win_rate !== null ? Number(Number(row.win_rate).toFixed(4)) : 0,
+        pnl: row.pnl !== null ? Number(Number(row.pnl).toFixed(2)) : 0,
+        avgPlanAdherence: row.avg_plan_adherence !== null ? Number(Number(row.avg_plan_adherence).toFixed(2)) : null,
+      }));
+
       return reply.status(200).send({
-        data: {
-          userId,
-          range: { from, to },
-          granularity,
-          summary: hasSummary
-            ? { winRate: overallWinRate, avgPlanAdherence, avgTiltIndex }
-            : null,
-          byEmotion,
-          overtradingEvents,
-        },
-        meta: {
-          traceId,
-          generatedAt: new Date().toISOString(),
-        },
+        userId,
+        granularity,
+        from,
+        to,
+        planAdherenceScore,
+        sessionTiltIndex,
+        winRateByEmotionalState,
+        revengeTrades,
+        overtradingEvents,
+        timeseries,
       });
     },
   );
@@ -183,17 +247,12 @@ export async function registerMetricRoutes(app: FastifyInstance): Promise<void> 
       }));
 
       return reply.status(200).send({
-        data: {
-          userId,
-          latestPlanAdherence: adherenceResult.rows[0]
-            ? { score: Number(adherenceResult.rows[0].score), calculatedAt: adherenceResult.rows[0].calculated_at }
-            : null,
-          dominantPatterns,
-        },
-        meta: {
-          traceId,
-          generatedAt: new Date().toISOString(),
-        },
+        userId,
+        generatedAt: new Date().toISOString(),
+        latestPlanAdherence: adherenceResult.rows[0]
+          ? { score: Number(adherenceResult.rows[0].score), calculatedAt: adherenceResult.rows[0].calculated_at }
+          : null,
+        dominantPatterns,
       });
     },
   );

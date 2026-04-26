@@ -9,6 +9,7 @@ import {
 } from "../infra/redis/client";
 import {
   computeWinRateByEmotion,
+  computeRevengeFlag,
   computePlanAdherence,
   computeSessionTilt,
   detectOvertrading,
@@ -63,7 +64,7 @@ function toTradeEvent(parsed: Record<string, string>): TradeEvent {
 async function ensureConsumerGroup(): Promise<void> {
   const redis = getRedis();
   try {
-    await redis.xgroup("CREATE", TRADE_EVENTS_STREAM, CONSUMER_GROUP, "$", "MKSTREAM");
+    await redis.xgroup("CREATE", TRADE_EVENTS_STREAM, CONSUMER_GROUP, "0", "MKSTREAM");
     logger.info({ event: "CONSUMER_GROUP_CREATED", group: CONSUMER_GROUP, stream: TRADE_EVENTS_STREAM });
   } catch (err: unknown) {
     // Group already exists — safe to ignore
@@ -194,6 +195,9 @@ async function processEvent(
 
     await computeWinRateByEmotion(client, userId, traceId);
     metricsUpdated.push("winRateByEmotion");
+
+    await computeRevengeFlag(client, userId, tradeId, traceId);
+    metricsUpdated.push("revengeFlag");
 
     await computePlanAdherence(client, userId, traceId);
     metricsUpdated.push("planAdherence");
