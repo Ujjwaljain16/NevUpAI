@@ -2,9 +2,10 @@ import Redis from "ioredis";
 import { env } from "../../config/env";
 import { logger } from "../logger";
 
+import { hostname } from "node:os";
 export const TRADE_EVENTS_STREAM = "trade_events";
 export const CONSUMER_GROUP = "metrics-group";
-export const WORKER_NAME = "worker-1";
+export const WORKER_NAME = `worker-${hostname()}-${process.pid}`;
 
 const redis = new Redis(env.redisUrl, {
   maxRetriesPerRequest: null,
@@ -74,7 +75,8 @@ export async function checkRedisHealth(): Promise<"connected" | "disconnected"> 
 
 export async function getQueueLag(): Promise<number> {
   try {
-    return await redis.xlen(TRADE_EVENTS_STREAM);
+    const res = await redis.xpending(TRADE_EVENTS_STREAM, CONSUMER_GROUP) as any;
+    return Number(res[0] ?? 0); // The first element of xpending response is the count
   } catch {
     return -1;
   }

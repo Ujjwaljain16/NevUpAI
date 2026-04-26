@@ -11,11 +11,17 @@ services:
       redis:
         condition: service_healthy
     command: npm run start:api
+    volumes:
+      - .:/app
+      - /app/node_modules
 
   worker:
     build: .
     env_file:
       - .env
+    volumes:
+      - .:/app
+      - /app/node_modules
     depends_on:
       db:
         condition: service_healthy
