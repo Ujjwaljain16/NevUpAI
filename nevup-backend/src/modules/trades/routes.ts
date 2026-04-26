@@ -5,58 +5,43 @@ import { logger } from "../../infra/logger";
 import { getRedis, TRADE_EVENTS_STREAM } from "../../infra/redis/client";
 import { authMiddleware } from "../auth/auth.middleware";
 import { tenancyMiddleware } from "../auth/tenancy.middleware";
+import { TradeRow, TradeInput } from "../../types/database";
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-type TradeRow = {
-  trade_id: string;
-  user_id: string;
-  session_id: string;
-  asset: string;
-  asset_class: "equity" | "crypto" | "forex";
-  direction: "long" | "short";
-  entry_price: string;
-  exit_price: string | null;
-  quantity: string;
-  entry_at: string;
-  exit_at: string | null;
-  status: "open" | "closed" | "cancelled";
-  plan_adherence: number | null;
-  emotional_state: "calm" | "anxious" | "greedy" | "fearful" | "neutral" | null;
-  entry_rationale: string | null;
+// Encapsulates business rules for calculating final trade outcomes and performance delta (PnL)
+function deriveOutcomeAndPnl(input: TradeInput): {
   outcome: "win" | "loss" | null;
-  pnl: string | null;
-  revenge_flag: boolean;
-  event_emitted: boolean;
-  created_at: string;
-  updated_at: string;
-  is_insert: boolean; // from (xmax = 0) in RETURNING
-};
+  pnl: number | null;
+} {
+  if (input.status !== "closed") {
+    return { outcome: null, pnl: null };
+  }
 
-type TradeInput = {
-  tradeId: string;
-  userId: string;
-  sessionId: string;
-  asset: string;
-  assetClass: "equity" | "crypto" | "forex";
-  direction: "long" | "short";
-  entryPrice: number;
-  exitPrice?: number | null;
-  quantity: number;
-  entryAt: string;
-  exitAt?: string | null;
-  status: "open" | "closed" | "cancelled";
-  planAdherence?: number | null;
-  emotionalState?: "calm" | "anxious" | "greedy" | "fearful" | "neutral" | null;
-  entryRationale?: string | null;
-};
+  if (input.exitPrice === null || input.exitPrice === undefined) {
+    throw Object.assign(new Error("'exitPrice' is required when status is 'closed'"), {
+      statusCode: 400,
+      errorCode: "BAD_REQUEST",
+    });
+  }
 
-// ---------------------------------------------------------------------------
-// Response mapper
-// ---------------------------------------------------------------------------
+  if (!input.exitAt) {
+    throw Object.assign(new Error("'exitAt' is required when status is 'closed'"), {
+      statusCode: 400,
+      errorCode: "BAD_REQUEST",
+    });
+  }
 
+  const rawPnl =
+    input.direction === "long"
+      ? (input.exitPrice - input.entryPrice) * input.quantity
+      : (input.entryPrice - input.exitPrice) * input.quantity;
+
+  const pnl = Number(rawPnl.toFixed(8));
+  const outcome = pnl > 0 ? "win" : "loss";
+
+  return { outcome, pnl };
+}
+
+// Canonical mapping of database rows to public API surface
 function toTradeResponse(row: TradeRow) {
   return {
     tradeId: row.trade_id,
@@ -82,39 +67,68 @@ function toTradeResponse(row: TradeRow) {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Routes
-// ---------------------------------------------------------------------------
-
 export async function registerTradeRoutes(app: FastifyInstance): Promise<void> {
 
-  // ── POST /trades ───────────────────────────────────────────────────────
+  // Primary entry point for trade capture. Implements idempotent writes to handle client retries safely.
   app.post<{ Body: TradeInput }>(
     "/trades",
-    { preHandler: [authMiddleware, tenancyMiddleware] },
+    {
+      preHandler: [authMiddleware, tenancyMiddleware],
+      schema: {
+        body: {
+          type: "object",
+          required: [
+            "tradeId",
+            "userId",
+            "sessionId",
+            "asset",
+            "assetClass",
+            "direction",
+            "entryPrice",
+            "quantity",
+            "entryAt",
+            "status",
+          ],
+          properties: {
+            tradeId: { type: "string", format: "uuid" },
+            userId: { type: "string", format: "uuid" },
+            sessionId: { type: "string", format: "uuid" },
+            asset: { type: "string", minLength: 1 },
+            assetClass: { type: "string", enum: ["equity", "crypto", "forex"] },
+            direction: { type: "string", enum: ["long", "short"] },
+            entryPrice: { type: "number" },
+            exitPrice: { type: ["number", "null"] },
+            quantity: { type: "number", exclusiveMinimum: 0 },
+            entryAt: { type: "string", format: "date-time" },
+            exitAt: { type: ["string", "null"], format: "date-time" },
+            status: { type: "string", enum: ["open", "closed", "cancelled"] },
+            planAdherence: { type: ["integer", "null"], minimum: 1, maximum: 5 },
+            emotionalState: {
+              type: ["string", "null"],
+              enum: ["calm", "anxious", "greedy", "fearful", "neutral", null],
+            },
+            entryRationale: { type: ["string", "null"], maxLength: 500 },
+          },
+          additionalProperties: false,
+        },
+      },
+    },
     async (request, reply) => {
       const traceId = request.appContext?.traceId ?? "unknown";
       const { tradeId, userId } = request.body;
+      const { outcome, pnl } = deriveOutcomeAndPnl(request.body);
 
-      // ── Step 1: Pre-fetch previous state ────────────────────────────────
-      const existing = await query<{ status: string; event_emitted: boolean }>(
-        "SELECT status, event_emitted FROM trades WHERE trade_id = $1",
-        [tradeId],
-      );
-      const previousStatus = existing.rows[0]?.status ?? null;
-      const alreadyEmitted = existing.rows[0]?.event_emitted ?? false;
-
-      // ── Step 2: Idempotent insert ────────────────────────────────────────
+      // Idempotent upsert: ensures duplicate client retries do not create multiple trades
       let upsertResult = await query<TradeRow & { is_insert?: boolean }>(
         `
         INSERT INTO trades (
           trade_id, user_id, session_id, asset, asset_class, direction,
           entry_price, exit_price, quantity, entry_at, exit_at, status,
-          plan_adherence, emotional_state, entry_rationale
+          plan_adherence, emotional_state, entry_rationale, outcome, pnl
         ) VALUES (
           $1, $2, $3, $4, $5, $6,
           $7, $8, $9, $10, $11, $12,
-          $13, $14, $15
+          $13, $14, $15, $16, $17
         )
         ON CONFLICT (trade_id) DO NOTHING
         RETURNING *, true AS is_insert
@@ -135,10 +149,12 @@ export async function registerTradeRoutes(app: FastifyInstance): Promise<void> {
           request.body.planAdherence ?? null,
           request.body.emotionalState ?? null,
           request.body.entryRationale ?? null,
+          outcome,
+          pnl,
         ],
       );
 
-      // If not inserted, fetch the existing row to return it
+      // Best-effort retrieval if the trade already existed (standard idempotent behavior)
       if (upsertResult.rowCount === 0) {
         upsertResult = await query<TradeRow & { is_insert?: boolean }>(
           "SELECT *, false AS is_insert FROM trades WHERE trade_id = $1",
@@ -147,7 +163,6 @@ export async function registerTradeRoutes(app: FastifyInstance): Promise<void> {
       }
 
       const row = upsertResult.rows[0];
-
       if (!row) {
         throw Object.assign(new Error("Trade could not be persisted."), {
           statusCode: 500,
@@ -156,11 +171,10 @@ export async function registerTradeRoutes(app: FastifyInstance): Promise<void> {
       }
 
       const isInsert = row.is_insert;
+      const alreadyEmitted = row.event_emitted;
       const isNowClosed = row.status === "closed";
-      const wasClosedBefore = previousStatus === "closed";
       const httpStatus = isInsert ? 201 : 200;
 
-      // ── Step 3: Log trade write ─────────────────────────────────────────
       logger.info({
         event: "TRADE_WRITE",
         traceId,
@@ -171,7 +185,7 @@ export async function registerTradeRoutes(app: FastifyInstance): Promise<void> {
         isInsert,
       });
 
-      // ── Step 4: Determine emission decision ─────────────────────────────
+      // Determines if a background metric calculation event is required
       let decision: "emit" | "skip" = "skip";
       let reason: string;
 
@@ -179,14 +193,9 @@ export async function registerTradeRoutes(app: FastifyInstance): Promise<void> {
         reason = "status_not_closed";
       } else if (alreadyEmitted) {
         reason = "already_closed";
-      } else if (isInsert) {
-        decision = "emit";
-        reason = "insert_closed";
-      } else if (!wasClosedBefore) {
-        decision = "emit";
-        reason = "transition_closed";
       } else {
-        reason = "already_closed";
+        decision = "emit";
+        reason = isInsert ? "insert_closed" : "closed_not_emitted";
       }
 
       logger.info({
@@ -195,13 +204,12 @@ export async function registerTradeRoutes(app: FastifyInstance): Promise<void> {
         tradeId,
         isInsert,
         isNowClosed,
-        wasClosedBefore,
         alreadyEmitted,
         decision,
         reason,
       });
 
-      // ── Step 5: Atomic claim + fire-and-forget emission ─────────────────
+      // Atomic claim + fire-and-forget emission ensures we process each 'closed' transition exactly once
       if (decision === "emit") {
         const claim = await query<{ trade_id: string }>(
           "UPDATE trades SET event_emitted = TRUE WHERE trade_id = $1 AND event_emitted = FALSE RETURNING trade_id",
@@ -242,6 +250,12 @@ export async function registerTradeRoutes(app: FastifyInstance): Promise<void> {
                 tradeId: row.trade_id,
                 error: err instanceof Error ? err.message : String(err),
               });
+
+              // Revert claim to allow subsequent retry or background sweep
+              await query(
+                "UPDATE trades SET event_emitted = FALSE WHERE trade_id = $1",
+                [row.trade_id],
+              );
             }
           });
         } else {
@@ -265,14 +279,14 @@ export async function registerTradeRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  // ── GET /trades/:tradeId ───────────────────────────────────────────────
+  // Point-in-time retrieval of trade state with tenancy enforcement
   app.get<{ Params: { tradeId: string } }>(
     "/trades/:tradeId",
     { preHandler: [authMiddleware] },
     async (request, reply) => {
       const result = await query<TradeRow>(
-        "SELECT * FROM trades WHERE trade_id = $1 AND user_id = $2",
-        [request.params.tradeId, request.user?.userId],
+        "SELECT * FROM trades WHERE trade_id = $1",
+        [request.params.tradeId],
       );
       const row = result.rows[0];
 
@@ -281,6 +295,13 @@ export async function registerTradeRoutes(app: FastifyInstance): Promise<void> {
           new Error("Trade with the given tradeId does not exist."),
           { statusCode: 404, errorCode: "TRADE_NOT_FOUND" },
         );
+      }
+
+      if (row.user_id !== request.user?.userId) {
+        throw Object.assign(new Error("Cross-tenant access denied"), {
+          statusCode: 403,
+          errorCode: "FORBIDDEN",
+        });
       }
 
       return reply.status(200).send(toTradeResponse(row));

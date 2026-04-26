@@ -1,7 +1,9 @@
 import { FastifyRequest, FastifyReply } from "fastify";
 import { logger } from "../../infra/logger";
 
+// Enforces strict tenancy boundaries by matching requested resources against the authenticated user
 export async function tenancyMiddleware(request: FastifyRequest, reply: FastifyReply) {
+  // Checks all possible input vectors for userId to ensure exhaustive coverage
   const paramsUserId = (request.params as Record<string, string>)?.userId;
   const bodyUserId = (request.body as Record<string, string>)?.userId;
   const queryUserId = (request.query as Record<string, string>)?.userId;
@@ -13,13 +15,14 @@ export async function tenancyMiddleware(request: FastifyRequest, reply: FastifyR
   ];
 
   const sources = rawSources.filter(s => s.value);
-
   const uniqueValues = new Set(sources.map(s => s.value));
 
+  // Denies requests that cannot be tied to a specific tenant
   if (sources.length === 0) {
     throw Object.assign(new Error("Missing userId for tenancy check"), { statusCode: 400 });
   }
 
+  // Prevents injection attacks where different IDs are passed in different parts of the request
   if (uniqueValues.size > 1) {
     logger.warn({
       event: "TENANCY_AMBIGUITY",
@@ -43,10 +46,12 @@ export async function tenancyMiddleware(request: FastifyRequest, reply: FastifyR
 
   const targetUserId = sources[0].value;
 
+  // The core invariant: authenticated userId must exactly match the resource-scoped userId
   if (request.user?.userId !== targetUserId) {
     throw Object.assign(new Error("Cross-tenant access denied"), { statusCode: 403 });
   }
 
+  // Audits the successful resolution of tenancy for the request lifecycle
   logger.info({
     event: "TENANCY_RESOLUTION",
     source: sources[0].source,
