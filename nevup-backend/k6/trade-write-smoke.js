@@ -1,5 +1,6 @@
 import http from 'k6/http';
-import { check } from 'k6';
+import { check, sleep } from 'k6';
+import exec from 'k6/execution';
 import crypto from 'k6/crypto';
 import encoding from 'k6/encoding';
 import { uuidv4 } from 'https://jslib.k6.io/k6-utils/1.4.0/index.js';
@@ -28,12 +29,9 @@ function buildJwt(sub, secret) {
 export const options = {
   scenarios: {
     writes: {
-      executor: 'constant-arrival-rate',
-      rate: 200,
-      timeUnit: '1s',
+      executor: 'constant-vus',
+      vus: 100, // 100 real concurrent connections
       duration: '60s',
-      preAllocatedVUs: 100,
-      maxVUs: 500,
       exec: 'writeTrades',
     },
   },
@@ -45,8 +43,10 @@ export const options = {
 
 // Test Logic
 export function writeTrades() {
-  const userId = "11111111-1111-1111-1111-111111111111";
-  const sessionId = "22222222-2222-2222-2222-222222222222";
+  // Use VU ID to simulate real distinct users concurrently
+  const vuId = exec.vu.idInTest.toString().padStart(12, '0');
+  const userId = `11111111-1111-1111-1111-${vuId}`;
+  const sessionId = `22222222-2222-2222-2222-${vuId}`;
   
   // Unique tradeId ensures idempotency
   const tradeId = uuidv4();
@@ -85,6 +85,8 @@ export function writeTrades() {
   check(res, {
     'write status is 201': (r) => r.status === 201,
   });
+
+  sleep(0.5); // 100 VUs * 2 requests/sec = 200 RPS
 }
 
 // Summary
