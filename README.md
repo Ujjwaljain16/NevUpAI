@@ -1,4 +1,4 @@
-﻿# NevUpAI
+# NevUpAI
 
 Deterministic event-driven trading analytics backend with idempotent writes and exactly-once event effects.
 
@@ -6,17 +6,17 @@ Deterministic event-driven trading analytics backend with idempotent writes and 
 
 ```bash
 docker compose up --build -d
-bash scripts/e2e.sh
+docker exec nevup-backend-api-1 npm test
 ```
-Runs a full end-to-end validation: write → idempotency → event → worker → metrics → security checks.
+Runs the full suite of integration and unit tests, proving system integrity across the DB, Redis, and API layers.
 
 ## System Guarantees
 
-* **Idempotent Write Path**: Duplicate requests to create a trade yield identical database state and return `200 OK` instead of `201 Created`.
-* **Exactly-Once Event Effect**: Events may be delivered multiple times, but a database-level idempotency gate (`processed_events`) ensures they affect the system exactly once.
-* **Deterministic Metrics**: Metrics are computed exclusively from database state, not event payloads. Full recomputation ensures results are independent of event delivery order.
-* **Failure Isolation**: Redis unavailability does not block the primary write path.
-* **Strict Multi-Tenancy**: The `sub` claim in the JWT must strictly match the `userId` in the route path. Cross-tenant access fails with a `403 Forbidden` (never a `404 Not Found`).
+* **Idempotent Write Path**: Duplicate requests to create a trade return `200 OK` with the existing record and **zero database mutation**, as proven in `tests/idempotency.test.ts`.
+* **Exactly-Once Event Effect**: Atomic database-level "claim-and-emit" logic guarantees exactly one event is published to Redis per state transition.
+* **Dynamic, Range-Aware Metrics**: Metrics are computed in real-time from the database based on the requested `from`/`to` window, ensuring precision for any arbitrary period.
+* **Horizontal Scalability**: Workers are dynamically named and use Redis Consumer Groups with reliable offsets (`0` start) to allow parallel scaling without data loss.
+* **Strict Multi-Tenancy**: The `sub` claim in the JWT must match the data owner. Cross-tenant access fails with `403 Forbidden` (never a `404 Not Found`).
 
 ## Architecture
 
@@ -31,64 +31,34 @@ API → PostgreSQL → Redis Streams → Worker → Metrics Tables → API
 
 ## Proofs
 
-### End-to-End Validation
-The `scripts/e2e.sh` script tests the entire system lifecycle automatically.
+### Automated Testing Suite
+The backend is backed by a comprehensive suite of unit and integration tests:
+- **Unit Tests**: Isolate core logic like JWT validation and tenancy guards (`tests/unit/`).
+- **Integration Tests**: Verify end-to-end flows for Metrics, Sessions, and Health using real infrastructure (`tests/integration/`).
 
-```text
-▸ Step 1: Create open trade
-  ✔ Open trade created (201)
-▸ Step 2: Idempotent replay (same open trade)
-  ✔ Idempotent replay (200)
-▸ Step 3: Create closed trade (triggers event emission)
-  ✔ Closed trade created (201)
-▸ Step 4: Duplicate closed trade (no new event)
-  ✔ Duplicate closed trade (200)
-▸ Step 5: Polling for metrics (worker processing)...
-  ✔ Metrics populated (worker processed event)
+### Performance (Spec Compliance)
+The system is verified to sustain **200 trade-write events/second for 60 seconds** with p95 latency < 150ms.
+- **Throughput**: 200 RPS (constant arrival rate)
+- **Duration**: 60 seconds
+- **Error Rate**: 0.00%
+- **Proof**: See the full HTML report in `docs/k6_report.html`.
 
-  Metrics summary:
-    winRate: null (insufficient closed trades)
-    avgPlanAdherence: 3
-    avgTiltIndex: 0
-    overtradingEvents: 0
-
-  (traceId: 0e4b2a5e-7fe2-4906-aaf8-7875fbfa9a1c)
-
-▸ Step 6: Query session
-  ✔ Session query (200)
-▸ Step 7: Cross-tenant protection
-  ✔ Cross-tenant blocked (403)
-▸ Step 8: Input validation
-  ✔ Invalid params rejected (400)
+Run the load test yourself:
+```bash
+docker run --rm -v "${PWD}/nevup-backend:/app" -w /app -e BASE_URL=http://host.docker.internal:3000 grafana/k6 run k6/trade-write-smoke.js
 ```
-
-**What this proves:**
-* The database natively guards against duplicate writes.
-* The system emits exactly one event per state transition.
-* The worker processes the event and updates metrics deterministically.
-* Security middleware successfully isolates tenant data.
-
-## Performance
-
-Tested via `k6 run k6/trade-write-smoke.js` with a mixed workload (reads + writes) at a constant 50 requests/second for 30 seconds.
-
-* **Workload**: 50 write + 50 read req/s for 30s
-* **p95 Latency**: < 150ms
-* **Error Rate**: 0.00%
-* **Stability**: No queue backlog or worker retries observed
 
 ## Security & Tenancy
 
 * **JWT Structure**: Enforces strict validation of `sub`, `iat`, `exp`, and `role` claims.
-* **Tenancy Enforcement**: Global middleware ensures `jwt.sub === req.params.userId`. 
+* **Tenancy Enforcement**: Global middleware ensures `jwt.sub === req.user.userId`. 
 * **Denial Response**: Unauthorized cross-tenant queries immediately return a `403 Forbidden`, preventing enumeration attacks that a `404` might allow.
 
 ## Observability
 
 * **Trace Propagation**: A unique `traceId` is injected into every request context.
 * **Correlation**: This `traceId` flows from the HTTP request into structured logs, the Redis event payload, the worker logs, and finally the API response envelope.
-* **Structured Logs**: All log entries use predictable JSON schemas, making it trivial to track a single request's lifecycle across system boundaries.
-This allows any request to be traced across API → event → worker → metrics deterministically.
+* **Health Monitoring**: `/health` endpoint monitors DB/Redis connectivity and reports accurate `XPENDING` queue lag. Returns `503` when degraded.
 
 ## Key Design Decisions
 
@@ -100,8 +70,7 @@ Read the full context in [DECISIONS.md](DECISIONS.md).
 
 ## Known Trade-offs
 
-* **Database Prioritized Over Analytics**: If Redis becomes unavailable immediately after the database atomic claim succeeds, the event is permanently lost.  
-  This is intentional: database correctness and write latency are prioritized over analytics completeness.
+* **Database Prioritized Over Analytics**: If Redis becomes unavailable immediately after the database atomic claim succeeds, the event is permanently lost. This is intentional: database correctness and write latency are prioritized over analytics completeness.
 
 ## End-to-End Flow
 
@@ -116,25 +85,26 @@ Read the full context in [DECISIONS.md](DECISIONS.md).
 
 ```text
 nevup-backend/
-├── k6/            # Load testing scripts
-├── migrations/    # Idempotent PostgreSQL schema definitions
-├── scripts/       # E2E validation scripts
+├── docs/          # Performance reports and query explain plans
+├── k6/            # Load testing scripts (200 RPS compliant)
+├── migrations/    # Idempotent PostgreSQL schema and constraints
+├── tests/         # Automated test suite (Integration + Unit)
 └── src/
-    ├── config/    # Environment and app configuration
-    ├── infra/     # Database, Redis, and logger clients
-    ├── modules/   # Feature slices (auth, trades, metrics, sessions)
-    └── worker/    # Event consumer and deterministic metric computation
+    ├── infra/     # Database (Pool), Redis (Stream), and Logger clients
+    ├── modules/   # Feature slices (Auth, Trades, Metrics, Sessions)
+    └── worker/    # Metrics computation and behavioral analysis
 ```
 
-## API Examples
+## API Examples (OpenAPI Compliant)
 
-### Submit a Trade
+### Submit a Trade (Idempotent)
 ```bash
-curl -X POST http://localhost:3000/users/{userId}/trades \
+curl -X POST http://localhost:3000/trades \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{
     "tradeId": "550e8400-e29b-41d4-a716-446655440000",
+    "userId": "{yourUserId}",
     "sessionId": "440e8400-e29b-41d4-a716-446655440001",
     "asset": "AAPL",
     "assetClass": "equity",
@@ -146,9 +116,14 @@ curl -X POST http://localhost:3000/users/{userId}/trades \
   }'
 ```
 
-### Query Metrics
+### Query Dynamic Metrics
 ```bash
 curl "http://localhost:3000/users/{userId}/metrics?from=2025-01-01T00:00:00Z&to=2025-12-31T23:59:59Z&granularity=daily" \
   -H "Authorization: Bearer <token>"
 ```
 
+### AI Coaching (SSE Stream)
+```bash
+curl -N http://localhost:3000/sessions/{sessionId}/coaching \
+  -H "Authorization: Bearer <token>"
+```
