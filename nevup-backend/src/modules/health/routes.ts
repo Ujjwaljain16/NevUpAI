@@ -18,10 +18,9 @@ export async function registerHealthRoutes(app: FastifyInstance): Promise<void> 
       const healthy = dbConnection === "connected" && redisConnection === "connected";
       const status = healthy ? "ok" : "degraded";
 
-      return reply.status(200).send({
+      return reply.status(healthy ? 200 : 503).send({
         status,
         db: dbConnection,
-        dbConnection,
         redis: redisConnection,
         queueLag,
         timestamp: new Date().toISOString(),
