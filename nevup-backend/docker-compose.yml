@@ -1,8 +1,12 @@
 services:
   api:
     build: .
-    env_file:
-      - .env
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: ${PORT:-3000}
+      DATABASE_URL: ${DATABASE_URL:-postgres://postgres:postgres@db:5432/nevup}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      JWT_SECRET: ${JWT_SECRET:-97791d4db2aa5f689c3cc39356ce35762f0a73aa70923039d8ef72a2840a1b02}
     ports:
       - "3000:3000"
     depends_on:
@@ -17,8 +21,11 @@ services:
 
   worker:
     build: .
-    env_file:
-      - .env
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      DATABASE_URL: ${DATABASE_URL:-postgres://postgres:postgres@db:5432/nevup}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      JWT_SECRET: ${JWT_SECRET:-97791d4db2aa5f689c3cc39356ce35762f0a73aa70923039d8ef72a2840a1b02}
     volumes:
       - .:/app
       - /app/node_modules
