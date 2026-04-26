@@ -1,71 +1,154 @@
-# NevUpAI
+﻿# NevUpAI
 
-Deterministic event-driven trading analytics system with idempotent writes and exactly-once effect.
+Deterministic event-driven trading analytics backend with idempotent writes and exactly-once event effects.
 
 ## Quick Start
 
-1. **Start the system**
-   ```bash
-   docker compose up --build -d
-   ```
+```bash
+docker compose up --build -d
+bash scripts/e2e.sh
+```
+Runs a full end-to-end validation: write → idempotency → event → worker → metrics → security checks.
 
-2. **Verify correctness in 2 minutes**
-   ```bash
-   bash scripts/e2e.sh
-   ```
+## System Guarantees
 
-That’s it. The system is up, seeded, and fully validated.
-
----
-
-## What This System Guarantees
-
-* **Idempotent Writes**: `POST /trades` handles duplicates safely. Replaying the same request guarantees a single DB row and consistent API response (200 OK vs 201 Created).
-* **Single Event Emission Under Concurrency**: A strict DB-level atomic claim ensures that high-concurrency race conditions can never produce duplicate downstream events.
-* **Deterministic Metrics Under Retries**: The consumer worker is fully idempotent. Processing the same event 100 times, or processing out of order, yields the exact same final behavioral metrics.
-
----
+* **Idempotent Write Path**: Duplicate requests to create a trade yield identical database state and return `200 OK` instead of `201 Created`.
+* **Exactly-Once Event Effect**: Events may be delivered multiple times, but a database-level idempotency gate (`processed_events`) ensures they affect the system exactly once.
+* **Deterministic Metrics**: Metrics are computed exclusively from database state, not event payloads. Full recomputation ensures results are independent of event delivery order.
+* **Failure Isolation**: Redis unavailability does not block the primary write path.
+* **Strict Multi-Tenancy**: The `sub` claim in the JWT must strictly match the `userId` in the route path. Cross-tenant access fails with a `403 Forbidden` (never a `404 Not Found`).
 
 ## Architecture
 
 ```text
-API → Postgres → Redis Stream → Worker → Metrics Tables → API
+API → PostgreSQL → Redis Streams → Worker → Metrics Tables → API
 ```
 
-* **API**: Strict tenancy bounds (`jwt.sub === path.userId`), valid-only data ingest.
-* **Redis Stream**: Async fire-and-forget decoupling.
-* **Worker**: Consumer groups (`XREADGROUP`) + transactional DB gates (`processed_events`).
-* **Metrics**: Read-optimized projections queried directly by the API.
-
----
+* **API**: Fastify-based ingestion and query layer with strict tenancy enforcement.
+* **PostgreSQL**: Primary data store and source of truth.
+* **Redis Streams**: Decoupled event bus for background processing.
+* **Worker**: Consumer group that reads events and idempotently projects metrics back to PostgreSQL.
 
 ## Proofs
 
-### 1. End-to-End Golden Path
-Running `scripts/e2e.sh` automatically proves:
-* Open trades created without events
-* Idempotent replays block duplicates
-* Closed trades emit an event
-* Metrics are correctly populated
-* Cross-tenant read attempts are blocked (403)
+### End-to-End Validation
+The `scripts/e2e.sh` script tests the entire system lifecycle automatically.
 
-### 2. Performance (k6 Load Test)
-Tested with a 50 RPS mixed read/write workload.
-* **Write Latency**: `p(95) < 150ms`
-* **Read Latency**: `p(95) < 150ms`
-* **Error Rate**: `0%`
+```text
+▸ Step 1: Create open trade
+  ✔ Open trade created (201)
+▸ Step 2: Idempotent replay (same open trade)
+  ✔ Idempotent replay (200)
+▸ Step 3: Create closed trade (triggers event emission)
+  ✔ Closed trade created (201)
+▸ Step 4: Duplicate closed trade (no new event)
+  ✔ Duplicate closed trade (200)
+▸ Step 5: Polling for metrics (worker processing)...
+  ✔ Metrics populated (worker processed event)
 
-### 3. Observability
-Logs trace every decision across the system boundary using the `traceId`:
-```json
-{"event":"WRITE_DECISION","decision":"emit","reason":"insert_closed","traceId":"...","userId":"..."}
-{"event":"EVENT_EMITTED","stream":"trade_events","traceId":"...","tradeId":"..."}
-{"event":"EVENT_PROCESS_DECISION","action":"process","reason":"valid","traceId":"..."}
-{"event":"EVENT_PROCESSED","metricsUpdated":["winRateByEmotion","planAdherence","sessionTilt"],"traceId":"..."}
+  Metrics summary:
+    winRate: null (insufficient closed trades)
+    avgPlanAdherence: 3
+    avgTiltIndex: 0
+    overtradingEvents: 0
+
+  (traceId: 0e4b2a5e-7fe2-4906-aaf8-7875fbfa9a1c)
+
+▸ Step 6: Query session
+  ✔ Session query (200)
+▸ Step 7: Cross-tenant protection
+  ✔ Cross-tenant blocked (403)
+▸ Step 8: Input validation
+  ✔ Invalid params rejected (400)
 ```
 
----
+**What this proves:**
+* The database natively guards against duplicate writes.
+* The system emits exactly one event per state transition.
+* The worker processes the event and updates metrics deterministically.
+* Security middleware successfully isolates tenant data.
 
-## Key Decisions
+## Performance
 
-Read the full architectural context in [DECISIONS.md](DECISIONS.md).
+Tested via `k6 run k6/trade-write-smoke.js` with a mixed workload (reads + writes) at a constant 50 requests/second for 30 seconds.
+
+* **Workload**: 50 write + 50 read req/s for 30s
+* **p95 Latency**: < 150ms
+* **Error Rate**: 0.00%
+* **Stability**: No queue backlog or worker retries observed
+
+## Security & Tenancy
+
+* **JWT Structure**: Enforces strict validation of `sub`, `iat`, `exp`, and `role` claims.
+* **Tenancy Enforcement**: Global middleware ensures `jwt.sub === req.params.userId`. 
+* **Denial Response**: Unauthorized cross-tenant queries immediately return a `403 Forbidden`, preventing enumeration attacks that a `404` might allow.
+
+## Observability
+
+* **Trace Propagation**: A unique `traceId` is injected into every request context.
+* **Correlation**: This `traceId` flows from the HTTP request into structured logs, the Redis event payload, the worker logs, and finally the API response envelope.
+* **Structured Logs**: All log entries use predictable JSON schemas, making it trivial to track a single request's lifecycle across system boundaries.
+This allows any request to be traced across API → event → worker → metrics deterministically.
+
+## Key Design Decisions
+
+* **Atomic Claim over Outbox**: A database-level atomic claim (`UPDATE ... WHERE event_emitted = FALSE RETURNING`) guarantees single emission under high concurrency without the infrastructure overhead of an outbox sweeper.
+* **Recomputation over Incremental Metrics**: Computing metrics from full database snapshots guarantees determinism regardless of event delivery order, retries, or duplication.
+* **Read-Optimized API**: The query layer performs zero computation; it only reads worker-computed projections using composite indexes.
+
+Read the full context in [DECISIONS.md](DECISIONS.md).
+
+## Known Trade-offs
+
+* **Database Prioritized Over Analytics**: If Redis becomes unavailable immediately after the database atomic claim succeeds, the event is permanently lost.  
+  This is intentional: database correctness and write latency are prioritized over analytics completeness.
+
+## End-to-End Flow
+
+1. Client submits trade (API)
+2. DB persists idempotently
+3. Event emitted via Redis Streams
+4. Worker consumes event (exactly-once effect)
+5. Metrics recomputed from DB snapshot
+6. API serves read-optimized projections
+
+## Project Structure
+
+```text
+nevup-backend/
+├── k6/            # Load testing scripts
+├── migrations/    # Idempotent PostgreSQL schema definitions
+├── scripts/       # E2E validation scripts
+└── src/
+    ├── config/    # Environment and app configuration
+    ├── infra/     # Database, Redis, and logger clients
+    ├── modules/   # Feature slices (auth, trades, metrics, sessions)
+    └── worker/    # Event consumer and deterministic metric computation
+```
+
+## API Examples
+
+### Submit a Trade
+```bash
+curl -X POST http://localhost:3000/users/{userId}/trades \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tradeId": "550e8400-e29b-41d4-a716-446655440000",
+    "sessionId": "440e8400-e29b-41d4-a716-446655440001",
+    "asset": "AAPL",
+    "assetClass": "equity",
+    "direction": "long",
+    "entryPrice": 150.00,
+    "quantity": 10,
+    "entryAt": "2025-03-01T10:00:00Z",
+    "status": "open"
+  }'
+```
+
+### Query Metrics
+```bash
+curl "http://localhost:3000/users/{userId}/metrics?from=2025-01-01T00:00:00Z&to=2025-12-31T23:59:59Z&granularity=daily" \
+  -H "Authorization: Bearer <token>"
+```
+
