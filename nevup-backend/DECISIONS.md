@@ -23,3 +23,15 @@ If Redis fails after the atomic claim succeeds, `event_emitted` is already `true
 
 ## Phase 2: Events represent state transitions, not writes
 The system only emits `TRADE_CLOSED` events when a trade **transitions** to closed status (new insert as closed, or open→closed update). Duplicate submissions of already-closed trades do not produce events. This prevents metric corruption downstream.
+
+## Phase 3: Consumer groups over raw XREAD
+The worker uses Redis consumer groups (`XREADGROUP`) instead of raw `XREAD`. This provides built-in message tracking, retry support via pending entries, and a foundation for horizontal scaling. Group creation is idempotent on startup.
+
+## Phase 3: Transactional idempotent processing
+Event processing wraps `processed_events` insertion and all metric updates in a single PostgreSQL transaction. If the transaction fails, the event is not marked as processed and is not ACKed — it remains pending for retry. This guarantees: an event is either fully applied or not applied at all.
+
+## Phase 3: Full recomputation over incremental updates
+Metric functions (win rate, tilt, plan adherence) use DELETE + INSERT or UPSERT patterns that recompute from the full DB snapshot for the affected user. This makes the worker order-tolerant — processing event B before event A produces identical final metrics. The trade-off is slightly more work per event, but correctness is guaranteed regardless of delivery order.
+
+## Phase 3: ACK discipline
+Messages are ACKed only after a successful DB commit, or immediately for duplicates. Never before compute. This ensures no data loss on worker crashes — unacked messages are automatically retried via consumer group pending entries.
