@@ -14,3 +14,12 @@ JWT validation and strict `sub` ownership checks are applied in middleware so cr
 
 ## SQL-first data layer
 The DB layer uses explicit SQL and migrations rather than ORM abstractions. This keeps query behavior transparent, supports future performance tuning, and avoids hidden query patterns.
+
+## Phase 2: Atomic event emission claim
+Event emission for `TRADE_CLOSED` uses a database-level atomic claim (`UPDATE ... WHERE event_emitted = FALSE RETURNING`) before publishing to Redis. This guarantees exactly-once emission semantics even under concurrent requests. The emission itself is fire-and-forget via `setImmediate` to avoid blocking the HTTP response on Redis latency.
+
+## Phase 2: Explicit trade-off — DB correctness > analytics completeness
+If Redis fails after the atomic claim succeeds, `event_emitted` is already `true` and the event is lost permanently. This is an intentional design choice: the database remains the source of truth, and we prioritize write-path correctness over analytics completeness. A future outbox pattern or reconciliation sweep could close this gap, but it is not required for the current scope.
+
+## Phase 2: Events represent state transitions, not writes
+The system only emits `TRADE_CLOSED` events when a trade **transitions** to closed status (new insert as closed, or open→closed update). Duplicate submissions of already-closed trades do not produce events. This prevents metric corruption downstream.
