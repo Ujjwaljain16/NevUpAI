@@ -8,6 +8,8 @@ async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Blocks execution until critical infrastructure (DB/Redis) is reachable
+// Prevents container crash loops during orchestrated startups (e.g. Docker Compose)
 export async function waitForInfrastructure(maxAttempts = 20): Promise<void> {
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
@@ -36,6 +38,7 @@ export async function waitForInfrastructure(maxAttempts = 20): Promise<void> {
   }
 }
 
+// Ensures the database schema is up-to-date and populated with baseline data
 export async function prepareDatabase(): Promise<void> {
   await runMigrations();
   await runSeed();

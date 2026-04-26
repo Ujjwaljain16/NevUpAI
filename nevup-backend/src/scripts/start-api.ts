@@ -6,6 +6,8 @@ import { checkRedisHealth } from "../infra/redis/client";
 import { checkDbHealth } from "../infra/db/client";
 import { prepareDatabase, waitForInfrastructure } from "./bootstrap";
 
+// Entry point for the REST API service
+// Orchestrates infrastructure checks, schema readiness, and server activation
 async function start(): Promise<void> {
   await waitForInfrastructure();
   await prepareDatabase();
@@ -15,6 +17,7 @@ async function start(): Promise<void> {
 
   logger.info({ message: "API started", port: env.port });
 
+  // Final verification of system-wide availability and data density
   const [db, redis, seedCounts] = await Promise.all([
     checkDbHealth(),
     checkRedisHealth(),

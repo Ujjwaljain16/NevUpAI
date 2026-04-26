@@ -33,6 +33,7 @@ type SeedRow = {
   groundTruthPathologies: string;
 };
 
+// Finds the seed CSV file in expected locations
 async function resolveSeedPath(): Promise<string> {
   const candidates = [
     path.resolve(process.cwd(), "nevup_seed_dataset.csv"),
@@ -51,6 +52,7 @@ async function resolveSeedPath(): Promise<string> {
   throw new Error("nevup_seed_dataset.csv not found in expected locations.");
 }
 
+// Main seeding logic: inserts trades and computes initial metrics
 export async function runSeed(): Promise<void> {
   const filePath = await resolveSeedPath();
   const rawCsv = await fs.readFile(filePath, "utf8");
@@ -135,19 +137,19 @@ export async function runSeed(): Promise<void> {
     },
   });
 
-  // ── Step 2: Trigger metric computation for all seeded data ──────────
+  // Trigger metric computation for seeded data
   logger.info({ event: "SEED_METRICS_START", message: "Recomputing metrics for seeded data..." });
   const pool = getPool();
   const client = await pool.connect();
 
   try {
-    // 1. Per-user metrics
+    // User-level metrics
     for (const userId of uniqueUsers) {
       await computeWinRateByEmotion(client, userId, "seed-trace");
       await computePlanAdherence(client, userId, "seed-trace");
     }
 
-    // 2. Per-session metrics
+    // Session-level metrics
     for (const sessionKey of sessionTradeCounts.keys()) {
       const [userId, sessionId] = sessionKey.split(":");
       await computeSessionTilt(client, userId, sessionId, "seed-trace");

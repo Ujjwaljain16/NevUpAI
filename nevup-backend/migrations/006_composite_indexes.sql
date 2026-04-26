@@ -1,4 +1,4 @@
--- Phase 4: Composite indexes for bounded metric queries
+-- Composite indexes for bounded metric queries
 CREATE INDEX IF NOT EXISTS idx_trades_user_status_entry
   ON trades (user_id, status, entry_at);
 
