@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# ─────────────────────────────────────────────────────────────────────────────
-# NevUpAI — End-to-End Proof Script
+
+# NevUpAI — E2E Proof Script
 # Validates the full pipeline: write → event → worker → metrics
-# ─────────────────────────────────────────────────────────────────────────────
+
 set -euo pipefail
 
 BASE_URL="${BASE_URL:-http://localhost:3000}"
-JWT_SECRET="${JWT_SECRET:-97791d4f-3f95-42bd-8f04-b9ee312a5f34}"
+JWT_SECRET="${JWT_SECRET:-97791d4db2aa5f689c3cc39356ce35762f0a73aa70923039d8ef72a2840a1b02}"
 
-# ── Generate JWT ─────────────────────────────────────────────────────────────
+# Generate JWT
 USER_ID=$(docker exec -i nevup-backend-api-1 node -e "console.log(require('crypto').randomUUID())")
 SESSION_ID=$(docker exec -i nevup-backend-api-1 node -e "console.log(require('crypto').randomUUID())")
 OPEN_TRADE_ID=$(docker exec -i nevup-backend-api-1 node -e "console.log(require('crypto').randomUUID())")
@@ -46,8 +46,8 @@ echo "║              NevUpAI — E2E Proof Script                  ║"
 echo "╚═══════════════════════════════════════════════════════════╝"
 echo ""
 
-# ── 1. POST open trade ──────────────────────────────────────────────────────
-echo "▸ Step 1: Create open trade"
+# POST open trade
+echo "▸ Step: Create open trade"
 STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE_URL/users/$USER_ID/trades" \
   -H "$AUTH" -H "$CT" \
   -d "{
@@ -66,8 +66,8 @@ STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE_URL/users/$USER_I
   }")
 check "Open trade created" "201" "$STATUS"
 
-# ── 2. Idempotent replay ────────────────────────────────────────────────────
-echo "▸ Step 2: Idempotent replay (same open trade)"
+# Idempotent replay
+echo "▸ Step: Idempotent replay (same open trade)"
 STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE_URL/users/$USER_ID/trades" \
   -H "$AUTH" -H "$CT" \
   -d "{
@@ -86,8 +86,8 @@ STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE_URL/users/$USER_I
   }")
 check "Idempotent replay" "200" "$STATUS"
 
-# ── 3. POST closed trade (triggers event) ────────────────────────────────────
-echo "▸ Step 3: Create closed trade (triggers event emission)"
+# POST closed trade triggers event
+echo "▸ Step: Create closed trade (triggers event emission)"
 RESP=$(curl -s -w "\n%{http_code}" -X POST "$BASE_URL/users/$USER_ID/trades" \
   -H "$AUTH" -H "$CT" \
   -D /dev/stderr \
@@ -112,8 +112,8 @@ STATUS=$(echo "$RESP" | tail -1)
 TRACE_ID="unknown"
 check "Closed trade created" "201" "$STATUS"
 
-# ── 4. Duplicate closed trade ────────────────────────────────────────────────
-echo "▸ Step 4: Duplicate closed trade (no new event)"
+# Duplicate closed trade
+echo "▸ Step: Duplicate closed trade (no new event)"
 STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE_URL/users/$USER_ID/trades" \
   -H "$AUTH" -H "$CT" \
   -d "{
@@ -135,8 +135,8 @@ STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE_URL/users/$USER_I
   }")
 check "Duplicate closed trade" "200" "$STATUS"
 
-# ── 5. Poll for metrics (eventual consistency) ──────────────────────────────
-echo "▸ Step 5: Polling for metrics (worker processing)..."
+# Poll for metrics - eventual consistency
+echo "▸ Step: Polling for metrics (worker processing)..."
 METRICS_OK=false
 for i in $(seq 1 15); do
   METRICS=$(curl -s "$BASE_URL/users/$USER_ID/metrics?from=2025-01-01T00:00:00Z&to=2025-12-31T23:59:59Z&granularity=daily" \
@@ -178,26 +178,26 @@ else
   FAIL=$((FAIL + 1))
 fi
 
-# ── 6. Session endpoint ──────────────────────────────────────────────────────
+# Session endpoint
 echo ""
-echo "▸ Step 6: Query session"
+echo "▸ Step: Query session"
 STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/users/$USER_ID/sessions/$SESSION_ID" \
   -H "$AUTH")
 check "Session query" "200" "$STATUS"
 
-# ── 7. Cross-tenant check ────────────────────────────────────────────────────
-echo "▸ Step 7: Cross-tenant protection"
+# Cross-tenant check
+echo "▸ Step: Cross-tenant protection"
 STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/users/00000000-0000-0000-0000-000000000000/metrics?from=2025-01-01T00:00:00Z&to=2025-12-31T23:59:59Z&granularity=daily" \
   -H "$AUTH")
 check "Cross-tenant blocked" "403" "$STATUS"
 
-# ── 8. Validation check ─────────────────────────────────────────────────────
-echo "▸ Step 8: Input validation"
+# Input validation
+echo "▸ Step: Input validation"
 STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/users/$USER_ID/metrics?from=invalid&to=also-invalid&granularity=wrong" \
   -H "$AUTH")
 check "Invalid params rejected" "400" "$STATUS"
 
-# ── Summary ──────────────────────────────────────────────────────────────────
+# Summary results
 echo ""
 echo "═══════════════════════════════════════════════════════════"
 echo "  Results: $PASS passed, $FAIL failed"
