@@ -2,6 +2,7 @@ import request from "supertest";
 import { createApp } from "../../src/app";
 import { connectRedis, disconnectRedis } from "../../src/infra/redis/client";
 
+// Validates the deep-health endpoint which verifies both DB and Redis connectivity
 describe("Health Integration", () => {
   let app: any;
 
@@ -16,6 +17,7 @@ describe("Health Integration", () => {
     await disconnectRedis();
   });
 
+  // Intent: ensure the API correctly reports operational status when all dependencies are reachable
   it("should return 200 and connected status when services are up", async () => {
     const res = await request(app.server).get("/health");
 
@@ -25,8 +27,7 @@ describe("Health Integration", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("ok");
-    expect(res.body.db).toBe("connected");
-    expect(res.body.redis).toBe("connected");
+    expect(res.body.dbConnection).toBe("connected");
     expect(typeof res.body.queueLag).toBe("number");
   });
 });

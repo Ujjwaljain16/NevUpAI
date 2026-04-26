@@ -6,6 +6,7 @@ import { connectRedis, disconnectRedis } from "../../src/infra/redis/client";
 import jwt from "jsonwebtoken";
 import { env } from "../../src/config/env";
 
+// Validates session lifecycle management, post-session reflection (debriefing), and tenancy boundaries
 describe("Sessions Integration", () => {
   let app: any;
   const TEST_USER_ID = randomUUID();
@@ -16,13 +17,20 @@ describe("Sessions Integration", () => {
     exp: Math.floor(Date.now() / 1000) + 3600
   }, env.jwtSecret);
   const SESSION_ID = randomUUID();
+  const OTHER_USER_ID = randomUUID();
+  const OTHER_TOKEN = jwt.sign({
+    sub: OTHER_USER_ID,
+    role: "trader",
+    iat: Math.floor(Date.now() / 1000),
+    exp: Math.floor(Date.now() / 1000) + 3600,
+  }, env.jwtSecret);
 
   beforeAll(async () => {
     app = createApp();
     await app.ready();
     await connectRedis();
 
-    // Seed a session
+    // Intent: verify that a session is correctly derived from its constituent trades
     await query(
       `INSERT INTO trades (
         trade_id, user_id, session_id, asset, asset_class, direction, entry_price, quantity, entry_at, status, outcome, pnl
@@ -72,9 +80,9 @@ describe("Sessions Integration", () => {
     expect(dbResult.rows[0].overall_mood).toBe("calm");
   });
 
+  // Intent: ensure cross-tenant data leakage is prevented at the session level
   it("should return 403 when debriefing another user's session", async () => {
     const OTHER_SESSION_ID = randomUUID();
-    const OTHER_USER_ID = randomUUID();
     
     await query(
       `INSERT INTO trades (
@@ -85,8 +93,34 @@ describe("Sessions Integration", () => {
 
     const res = await request(app.server)
       .post(`/sessions/${OTHER_SESSION_ID}/debrief`)
-      .set("Authorization", `Bearer ${TOKEN}`) // Using TEST_USER_ID token
+      .set("Authorization", `Bearer ${TOKEN}`) 
       .send({ overallMood: "neutral", planAdherenceRating: 3 });
+
+    expect(res.status).toBe(403);
+  });
+
+  it("should return 403 when fetching another user's session", async () => {
+    const otherSessionId = randomUUID();
+    const ownerUserId = randomUUID();
+
+    await query(
+      `INSERT INTO trades (
+        trade_id, user_id, session_id, asset, asset_class, direction, entry_price, quantity, entry_at, status
+      ) VALUES ($1, $2, $3, 'BTC', 'crypto', 'long', 30000, 1, NOW(), 'open')`,
+      [randomUUID(), ownerUserId, otherSessionId],
+    );
+
+    const res = await request(app.server)
+      .get(`/sessions/${otherSessionId}`)
+      .set("Authorization", `Bearer ${TOKEN}`);
+
+    expect(res.status).toBe(403);
+  });
+
+  it("should return 403 for cross-tenant coaching stream", async () => {
+    const res = await request(app.server)
+      .get(`/sessions/${SESSION_ID}/coaching`)
+      .set("Authorization", `Bearer ${OTHER_TOKEN}`);
 
     expect(res.status).toBe(403);
   });

@@ -3,9 +3,9 @@ import { tenancyMiddleware } from "../../src/modules/auth/tenancy.middleware";
 import { FastifyRequest, FastifyReply } from "fastify";
 import jwt from "jsonwebtoken";
 import { env } from "../../src/config/env";
-
 import "../../src/types/fastify.d.ts";
 
+// Verifies the core identity layer: token extraction and algorithm enforcement
 describe("Auth Middleware Unit", () => {
   let mockReq: any;
   let mockReply: Partial<FastifyReply>;
@@ -21,11 +21,13 @@ describe("Auth Middleware Unit", () => {
     };
   });
 
+  // Intent: ensure the system fails safe when no identity is provided
   it("should throw 401 if token is missing", async () => {
     await expect(authMiddleware(mockReq as any, mockReply as any))
       .rejects.toMatchObject({ statusCode: 401 });
   });
 
+  // Intent: verify the translation of JWT claims into the internal request.user context
   it("should validate a correct token and set request.user", async () => {
     const userId = "12345";
     const token = jwt.sign({ 
@@ -42,7 +44,9 @@ describe("Auth Middleware Unit", () => {
   });
 });
 
+// Verifies the isolation layer: preventing users from acting on behalf of others
 describe("Tenancy Middleware Unit", () => {
+  // Intent: block cross-tenant injection where a user provides their own token but another user's ID
   it("should throw 403 if userId in body does not match token", async () => {
     const mockReq: any = {
       user: { userId: "user-A" },
