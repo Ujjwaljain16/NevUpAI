@@ -41,7 +41,7 @@ export function writeTrades() {
   const userId = "k6-user";
   const sessionId = "k6-session";
   // Unique trade ID prevents conflicts
-  const tradeId = \`k6-trade-\${exec.vu.idInTest}-\${exec.scenario.iterationInTest}\`;
+  const tradeId = `k6-trade-${exec.vu.idInTest}-${exec.scenario.iterationInTest}`;
 
   const isClosed = Math.random() > 0.5;
 
@@ -65,12 +65,12 @@ export function writeTrades() {
   const params = {
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': \`Bearer \${TOKEN}\`,
+      'Authorization': `Bearer ${TOKEN}`,
     },
     tags: { type: 'write' },
   };
 
-  const res = http.post(\`\${BASE_URL}/users/\${userId}/trades\`, payload, params);
+  const res = http.post(`${BASE_URL}/users/${userId}/trades`, payload, params);
   
   check(res, {
     'write status is 201 or 200': (r) => r.status === 201 || r.status === 200,
@@ -82,12 +82,12 @@ export function readMetrics() {
   
   const params = {
     headers: {
-      'Authorization': \`Bearer \${TOKEN}\`,
+      'Authorization': `Bearer ${TOKEN}`,
     },
     tags: { type: 'read' },
   };
 
-  const res = http.get(\`\${BASE_URL}/users/\${userId}/metrics?from=2025-01-01T00:00:00Z&to=2025-12-31T23:59:59Z&granularity=daily\`, params);
+  const res = http.get(`${BASE_URL}/users/${userId}/metrics?from=2025-01-01T00:00:00Z&to=2025-12-31T23:59:59Z&granularity=daily`, params);
   
   check(res, {
     'read status is 200': (r) => r.status === 200,
