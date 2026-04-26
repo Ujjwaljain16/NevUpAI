@@ -48,7 +48,7 @@ echo ""
 
 # POST open trade
 echo "▸ Step: Create open trade"
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE_URL/users/$USER_ID/trades" \
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE_URL/trades" \
   -H "$AUTH" -H "$CT" \
   -d "{
     \"tradeId\": \"$OPEN_TRADE_ID\",
@@ -68,7 +68,7 @@ check "Open trade created" "201" "$STATUS"
 
 # Idempotent replay
 echo "▸ Step: Idempotent replay (same open trade)"
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE_URL/users/$USER_ID/trades" \
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE_URL/trades" \
   -H "$AUTH" -H "$CT" \
   -d "{
     \"tradeId\": \"$OPEN_TRADE_ID\",
@@ -88,7 +88,7 @@ check "Idempotent replay" "200" "$STATUS"
 
 # POST closed trade triggers event
 echo "▸ Step: Create closed trade (triggers event emission)"
-RESP=$(curl -s -w "\n%{http_code}" -X POST "$BASE_URL/users/$USER_ID/trades" \
+RESP=$(curl -s -w "\n%{http_code}" -X POST "$BASE_URL/trades" \
   -H "$AUTH" -H "$CT" \
   -D /dev/stderr \
   -d "{
@@ -114,7 +114,7 @@ check "Closed trade created" "201" "$STATUS"
 
 # Duplicate closed trade
 echo "▸ Step: Duplicate closed trade (no new event)"
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE_URL/users/$USER_ID/trades" \
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE_URL/trades" \
   -H "$AUTH" -H "$CT" \
   -d "{
     \"tradeId\": \"$CLOSED_TRADE_ID\",
@@ -181,7 +181,7 @@ fi
 # Session endpoint
 echo ""
 echo "▸ Step: Query session"
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/users/$USER_ID/sessions/$SESSION_ID" \
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/sessions/$SESSION_ID" \
   -H "$AUTH")
 check "Session query" "200" "$STATUS"
 
