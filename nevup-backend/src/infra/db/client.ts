@@ -2,8 +2,16 @@ import { Pool, QueryResult, QueryResultRow } from "pg";
 import { env } from "../../config/env";
 import { logger } from "../logger";
 
-const pool = new Pool({ connectionString: env.databaseUrl });
+// Main connection pool for PostgreSQL
+const pool = new Pool({
+  connectionString: env.databaseUrl,
+  // 17 connections: (2 * 8 CPU cores + 1) for optimal hackathon infra throughput
+  max: 17, 
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 2000,
+});
 
+// Logs fatal errors within the connection pool
 pool.on("error", (error) => {
   logger.error({
     message: "PostgreSQL pool error",
@@ -11,6 +19,7 @@ pool.on("error", (error) => {
   });
 });
 
+// Helper for standard SQL queries
 export async function query<T extends QueryResultRow = QueryResultRow>(
   text: string,
   params?: unknown[],
@@ -18,10 +27,12 @@ export async function query<T extends QueryResultRow = QueryResultRow>(
   return pool.query<T>(text, params);
 }
 
+// Access to raw pool for specialized operations (e.g. manual connection control)
 export function getPool(): Pool {
   return pool;
 }
 
+// Validates database connectivity
 export async function checkDbHealth(): Promise<"connected" | "disconnected"> {
   try {
     await pool.query("SELECT 1");
@@ -31,6 +42,7 @@ export async function checkDbHealth(): Promise<"connected" | "disconnected"> {
   }
 }
 
+// Gracefully shuts down the connection pool
 export async function closeDb(): Promise<void> {
   await pool.end();
 }

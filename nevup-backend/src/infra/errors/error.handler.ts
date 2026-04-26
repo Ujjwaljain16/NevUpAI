@@ -1,21 +1,25 @@
 import { FastifyError, FastifyRequest, FastifyReply } from "fastify";
 import { logger } from "../logger";
 
+// Standardizes error responses across the system to ensure consistent client-side handling
+// and provides trace mapping for backend debugging.
 export function errorHandler(error: FastifyError, request: FastifyRequest, reply: FastifyReply) {
   const traceId = request.appContext?.traceId ?? "unknown";
 
+  // Logs the full stack trace internally for auditability without leaking details to the client
   logger.error({
     event: "ERROR",
     traceId,
     error: error.message,
-    stack: error.stack, // Internal only
+    stack: error.stack,
   });
 
-  // Default to 500
+  // Default fallback prevents leaking raw infrastructure errors to the end-user
   let statusCode = 500;
   let errorCode = "INTERNAL";
   let message = "Unexpected internal error.";
 
+  // Maps internal Fastify/Schema errors to well-defined public API contracts
   if (error.statusCode) {
     statusCode = error.statusCode;
     if (statusCode === 400) {
@@ -40,6 +44,7 @@ export function errorHandler(error: FastifyError, request: FastifyRequest, reply
   });
 }
 
+// Explicitly handles missing routes to maintain uniform 404 behavior and trace propagation
 export function notFoundHandler(request: FastifyRequest, reply: FastifyReply) {
   const traceId = request.appContext?.traceId ?? "unknown";
 

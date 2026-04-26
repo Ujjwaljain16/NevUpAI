@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { query } from "./client";
 
+// Tracking table for idempotent schema updates
 async function ensureMigrationsTable(): Promise<void> {
   await query(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -12,6 +13,7 @@ async function ensureMigrationsTable(): Promise<void> {
   `);
 }
 
+// Executes pending SQL migrations in sorted order
 export async function runMigrations(): Promise<void> {
   await ensureMigrationsTable();
 
@@ -30,6 +32,8 @@ export async function runMigrations(): Promise<void> {
     }
 
     const sql = await fs.readFile(path.join(migrationsDir, file), "utf8");
+    
+    // Transactions ensure atomic migration application
     await query("BEGIN");
     try {
       await query(sql);
