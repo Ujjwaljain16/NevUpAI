@@ -42,6 +42,7 @@ function deriveOutcomeAndPnl(input: TradeInput): {
 }
 
 // Canonical mapping of database rows to public API surface
+// Ensures all 15 fields of the Canonical Trade Schema are present
 function toTradeResponse(row: TradeRow) {
   return {
     tradeId: row.trade_id,
@@ -59,6 +60,7 @@ function toTradeResponse(row: TradeRow) {
     planAdherence: row.plan_adherence,
     emotionalState: row.emotional_state,
     entryRationale: row.entry_rationale,
+    // Performance fields (extended schema)
     outcome: row.outcome,
     pnl: row.pnl === null ? null : Number(row.pnl),
     revengeFlag: row.revenge_flag,
@@ -85,9 +87,14 @@ export async function registerTradeRoutes(app: FastifyInstance): Promise<void> {
             "assetClass",
             "direction",
             "entryPrice",
+            "exitPrice",
             "quantity",
             "entryAt",
+            "exitAt",
             "status",
+            "planAdherence",
+            "emotionalState",
+            "entryRationale",
           ],
           properties: {
             tradeId: { type: "string", format: "uuid" },

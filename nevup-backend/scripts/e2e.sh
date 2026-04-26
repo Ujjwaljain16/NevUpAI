@@ -61,8 +61,11 @@ STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE_URL/trades" \
     \"quantity\": 10,
     \"entryAt\": \"2025-03-01T10:00:00Z\",
     \"status\": \"open\",
+    \"exitPrice\": null,
+    \"exitAt\": null,
     \"planAdherence\": 4,
-    \"emotionalState\": \"calm\"
+    \"emotionalState\": \"calm\",
+    \"entryRationale\": \"E2E test open trade\"
   }")
 check "Open trade created" "201" "$STATUS"
 
@@ -106,7 +109,7 @@ RESP=$(curl -s -w "\n%{http_code}" -X POST "$BASE_URL/trades" \
     \"status\": \"closed\",
     \"planAdherence\": 3,
     \"emotionalState\": \"anxious\",
-    \"outcome\": \"win\"
+    \"entryRationale\": \"E2E test closed trade\"
   }" 2>/dev/null)
 STATUS=$(echo "$RESP" | tail -1)
 TRACE_ID="unknown"
@@ -131,7 +134,7 @@ STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE_URL/trades" \
     \"status\": \"closed\",
     \"planAdherence\": 3,
     \"emotionalState\": \"anxious\",
-    \"outcome\": \"win\"
+    \"entryRationale\": \"E2E test closed trade\"
   }")
 check "Duplicate closed trade" "200" "$STATUS"
 

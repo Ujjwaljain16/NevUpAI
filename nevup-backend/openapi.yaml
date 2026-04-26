@@ -369,9 +369,14 @@ components:
         - assetClass
         - direction
         - entryPrice
+        - exitPrice
         - quantity
         - entryAt
+        - exitAt
         - status
+        - planAdherence
+        - emotionalState
+        - entryRationale
       properties:
         tradeId:
           type: string

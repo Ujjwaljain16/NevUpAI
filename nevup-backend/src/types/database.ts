@@ -25,7 +25,7 @@ export interface TradeRow {
 }
 
 // Data Transfer Object (DTO) for capturing trade events from the frontend
-// Enforces number types for runtime calculations before persistence
+// Enforces strict compliance with the Canonical Trade Schema (15 fields)
 export interface TradeInput {
   tradeId: string;
   userId: string;
@@ -34,12 +34,12 @@ export interface TradeInput {
   assetClass: "equity" | "crypto" | "forex";
   direction: "long" | "short";
   entryPrice: number;
-  exitPrice?: number | null;
+  exitPrice: number | null;
   quantity: number;
   entryAt: string;
-  exitAt?: string | null;
+  exitAt: string | null;
   status: "open" | "closed" | "cancelled";
-  planAdherence?: number | null;
-  emotionalState?: "calm" | "anxious" | "greedy" | "fearful" | "neutral" | null;
-  entryRationale?: string | null;
+  planAdherence: number | null;
+  emotionalState: "calm" | "anxious" | "greedy" | "fearful" | "neutral" | null;
+  entryRationale: string | null;
 }

@@ -51,7 +51,12 @@ describe("Trade Idempotency", () => {
       entryPrice: 50000,
       quantity: 1,
       entryAt: new Date().toISOString(),
-      status: "open"
+      exitAt: null,
+      exitPrice: null,
+      status: "open",
+      planAdherence: null,
+      emotionalState: "neutral",
+      entryRationale: null
     };
 
     (db.query as jest.Mock).mockResolvedValueOnce({
@@ -141,7 +146,12 @@ describe("Multi-Tenancy", () => {
         entryPrice: 50000,
         quantity: 1,
         entryAt: new Date().toISOString(),
-        status: "open"
+        exitAt: null,
+        exitPrice: null,
+        status: "open",
+        planAdherence: null,
+        emotionalState: "neutral",
+        entryRationale: null
       });
 
     expect(res.status).toBe(403);

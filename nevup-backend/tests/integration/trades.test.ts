@@ -52,6 +52,9 @@ describe("Trades Integration", () => {
       entryAt: new Date().toISOString(),
       exitAt: new Date().toISOString(),
       status: "closed",
+      planAdherence: 5,
+      emotionalState: "calm",
+      entryRationale: "Manual test entry",
     };
 
     const response = await request(app.server)
@@ -74,9 +77,14 @@ describe("Trades Integration", () => {
       assetClass: "crypto",
       direction: "long",
       entryPrice: 50000,
+      exitPrice: null,
       quantity: 1,
       entryAt: new Date().toISOString(),
+      exitAt: null,
       status: "open",
+      planAdherence: null,
+      emotionalState: "neutral",
+      entryRationale: null,
     };
 
     const response = await request(app.server)
@@ -98,9 +106,14 @@ describe("Trades Integration", () => {
       assetClass: "crypto",
       direction: "short",
       entryPrice: 2000,
+      exitPrice: null,
       quantity: 10,
       entryAt: new Date().toISOString(),
+      exitAt: null,
       status: "open",
+      planAdherence: null,
+      emotionalState: "anxious",
+      entryRationale: null,
     };
 
     const response = await request(app.server)
