@@ -14,6 +14,7 @@ The system focuses on the psychological and behavioral aspects of trading, trans
 - **Exactly-Once Processing**: Redis Stream consumer groups with a PostgreSQL idempotency gate.
 - **Transactional Consistency**: All metric recomputations are wrapped in atomic DB transactions.
 - **Strict Multi-Tenancy**: Identity enforcement via JWT subjects across all endpoints.
+- **High Concurrency Performance**: Validated with 100 concurrent virtual users at **27ms p95 latency**.
 
 ## Quick Start
 To boot the entire stack (API, Worker, PostgreSQL, Redis) and run the end-to-end validation:

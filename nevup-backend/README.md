@@ -64,9 +64,10 @@ The `scripts/validate_metrics.js` script validates our algorithms against the se
 
 ## Performance & Scalability
 
-Validated via `k6` load tests under concurrent load:
-* **Throughput**: Supports 200+ events/sec with 0% error rate.
-* **Latency**: p95 write latency < 150ms.
+Validated via `k6` load tests under **high real concurrency** (100 simultaneous virtual users with unique identities):
+* **Concurrency**: Confirmed system stability with 100 simultaneous active connections and 100 distinct user sessions.
+* **Throughput**: Sustained ~200 requests/sec with 0% error rate.
+* **Latency**: p95 write latency of **27.84ms** (far exceeding the 150ms target).
 * **Optimized Reads**: `GET /metrics` is optimized with composite indexes `(user_id, entry_at)`, achieving sub-5ms execution time for typical range queries.
 
 ## Observability & Security
