@@ -26,3 +26,5 @@ bash scripts/e2e.sh
 ```
 
 For a deep dive into the architectural reasoning and product thesis, see the [**DECISIONS.md**](nevup-backend/DECISIONS.md) file inside the backend directory.
+
+```this was not deployed as limits of free tier of unable to deploy the bg worker so use docker ```
